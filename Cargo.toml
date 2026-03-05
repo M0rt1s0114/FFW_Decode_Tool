@@ -1,0 +1,7 @@
+[package]
+name = "sm232x_ffwtool"
+version = "0.2.0"
+edition = "2021"
+
+[dependencies]
+indicatif = "0.17"
