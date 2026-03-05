@@ -1,0 +1,119 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  CARGO_NET_GIT_FETCH_WITH_CLI: true
+
+jobs:
+  build-release:
+    name: Build Release Binaries
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact_name: sm232x_ffwtool
+            asset_name: sm232x_ffwtool-windows-x86_64.exe
+            upx_asset_name: sm232x_ffwtool-windows-x86_64-upx.exe
+          - os: ubuntu-latest
+            artifact_name: sm232x_ffwtool
+            asset_name: sm232x_ffwtool-linux-x86_64
+            upx_asset_name: sm232x_ffwtool-linux-x86_64-upx
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    - name: Build release binary
+      run: cargo build --release --verbose
+
+    - name: Strip binary (Linux only)
+      if: matrix.os == 'ubuntu-latest'
+      run: strip target/release/${{ matrix.artifact_name }}
+
+    - name: Install UPX (Windows)
+      if: matrix.os == 'windows-latest'
+      shell: pwsh
+      run: |
+        Invoke-WebRequest -Uri "https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-win64.zip" -OutFile "upx.zip"
+        Expand-Archive -Path "upx.zip" -DestinationPath "upx-temp"
+        Move-Item -Path "upx-temp/upx-4.2.4-win64/upx.exe" -Destination "upx.exe"
+
+    - name: Install UPX (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      shell: bash
+      run: |
+        curl -L -o upx.tar.xz https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-amd64_linux.tar.xz
+        tar -xf upx.tar.xz
+        mv upx-4.2.4-amd64_linux/upx /usr/local/bin/
+        chmod +x /usr/local/bin/upx
+
+    - name: Compress binary with UPX (Windows)
+      if: matrix.os == 'windows-latest'
+      shell: pwsh
+      run: |
+        .\upx.exe --best --ultra-brute "target/release/${{ matrix.artifact_name }}.exe" -o "${{ matrix.upx_asset_name }}"
+        Copy-Item "target/release/${{ matrix.artifact_name }}.exe" -Destination "${{ matrix.asset_name }}"
+
+    - name: Compress binary with UPX (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      shell: bash
+      run: |
+        upx --best --ultra-brute "target/release/${{ matrix.artifact_name }}" -o "${{ matrix.upx_asset_name }}"
+        cp "target/release/${{ matrix.artifact_name }}" "${{ matrix.asset_name }}"
+        chmod +x "${{ matrix.asset_name }}"
+        chmod +x "${{ matrix.upx_asset_name }}"
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.os }}-binaries
+        path: |
+          ${{ matrix.asset_name }}
+          ${{ matrix.upx_asset_name }}
+        retention-days: 7
+
+  create-release:
+    name: Create GitHub Release
+    needs: build-release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: List downloaded files (debug)
+      run: ls -R artifacts
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ github.ref }}
+        release_name: Release ${{ github.ref }}
+        files: |
+          artifacts/windows-latest-binaries/sm232x_ffwtool-windows-x86_64-upx.exe
+          artifacts/windows-latest-binaries/sm232x_ffwtool-windows-x86_64.exe
+          artifacts/ubuntu-latest-binaries/sm232x_ffwtool-linux-x86_64-upx
+          artifacts/ubuntu-latest-binaries/sm232x_ffwtool-linux-x86_64
